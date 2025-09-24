@@ -1,0 +1,54 @@
+---
+- name: Reset Kubernetes Cluster (Master + Workers)
+  hosts: k8s_cluster
+  become: yes
+  gather_facts: yes
+  tasks:
+
+    - name: Stop kubelet and container runtime
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - kubelet
+        - containerd
+
+    - name: Reset kubeadm cluster (master) or worker join info
+      command: kubeadm reset -f
+      register: kubeadm_reset
+      changed_when: "'resetting' in kubeadm_reset.stdout or kubeadm_reset.rc == 0"
+
+    - name: Remove CNI network configs
+      file:
+        path: /etc/cni/net.d
+        state: absent
+
+    - name: Remove kubelet state dirs
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/kubelet
+        - /var/lib/kubeadm
+        - /etc/kubernetes
+
+    - name: Flush iptables (optional but recommended)
+      command: iptables -F
+      ignore_errors: yes
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Ensure kubelet and containerd are stopped
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - kubelet
+        - containerd
+
+    - name: Notify reset complete
+      debug:
+        msg: "Node {{ inventory_hostname }} reset successfully. Ready for fresh kubeadm init/join."
+

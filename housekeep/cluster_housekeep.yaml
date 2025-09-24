@@ -1,0 +1,83 @@
+---
+- name: Linux housekeeping and upgrades
+  hosts: all
+  become: yes
+  vars:
+    reboot_required_file: /var/run/reboot-required
+  vars_files:
+    - secrets.yml
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Upgrade all packages
+      ansible.builtin.apt:
+        upgrade: dist
+        autoremove: yes
+        autoclean: yes
+
+    - name: Check if reboot is required
+      ansible.builtin.stat:
+        path: "{{ reboot_required_file }}"
+      register: reboot_required
+
+    - name: Reboot if required
+      ansible.builtin.reboot:
+        msg: "Rebooting after kernel/security upgrade"
+        connect_timeout: 5
+        reboot_timeout: 600
+        test_command: uptime
+      when: reboot_required.stat.exists
+
+    - name: Ensure system is healthy
+      ansible.builtin.command: uptime
+      register: system_health
+      changed_when: false
+
+    - name: Print system load
+      ansible.builtin.debug:
+        var: system_health.stdout
+
+    # --- Version checks section ---
+    - name: Check Docker version
+      ansible.builtin.command: docker --version
+      register: docker_version
+      failed_when: false
+      changed_when: false
+
+    - name: Print Docker version
+      ansible.builtin.debug:
+        msg: "{{ docker_version.stdout | default('Docker not installed') }}"
+
+    - name: Check kubectl version
+      ansible.builtin.command: kubectl version --client=true --short
+      register: kubectl_version
+      failed_when: false
+      changed_when: false
+
+    - name: Print kubectl version
+      ansible.builtin.debug:
+        msg: "{{ kubectl_version.stdout | default('kubectl not installed') }}"
+
+    - name: Check kubeadm version
+      ansible.builtin.command: kubeadm version -o short
+      register: kubeadm_version
+      failed_when: false
+      changed_when: false
+
+    - name: Print kubeadm version
+      ansible.builtin.debug:
+        msg: "{{ kubeadm_version.stdout | default('kubeadm not installed') }}"
+
+    - name: Check kubelet version
+      ansible.builtin.command: kubelet --version
+      register: kubelet_version
+      failed_when: false
+      changed_when: false
+
+    - name: Print kubelet version
+      ansible.builtin.debug:
+        msg: "{{ kubelet_version.stdout | default('kubelet not installed') }}"
+

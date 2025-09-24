@@ -1,0 +1,76 @@
+- hosts: control_plane
+  become: yes
+  gather_facts: yes
+  vars:
+    kubeadmin_conf: /etc/kubernetes/admin.conf
+
+  tasks:
+    - name: Initialize control-plane (only once)
+      command: kubeadm init --pod-network-cidr={{ hostvars[inventory_hostname].pod_network_cidr | default('10.244.0.0/16') }}
+      args:
+        creates: "{{ kubeadmin_conf }}"
+      register: kubeadm_init
+      changed_when: "'initialized' in (kubeadm_init.stdout + kubeadm_init.stderr) or kubeadm_init.rc == 0"
+
+    - name: Ensure admin kubeconfig is accessible to ansible_user
+      file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0700'
+
+    - name: Copy admin.conf to ansible_user kube config
+      copy:
+        src: "{{ kubeadmin_conf }}"
+        dest: "/home/{{ ansible_user }}/.kube/config"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0644'
+        remote_src: yes
+      when: kubeadm_init is changed or (ansible_facts.get('env', {}) | default({})) != {}
+
+    - name: Install Calico CNI
+      command: /usr/bin/env KUBECONFIG={{ kubeadmin_conf }} kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.0/manifests/calico.yaml
+      register: calico_apply
+      changed_when: calico_apply.rc == 0
+      retries: 5
+      delay: 10
+      until: calico_apply.rc == 0
+
+    - name: Create join command file for workers
+      command: /usr/bin/env KUBECONFIG={{ kubeadmin_conf }} kubeadm token create --print-join-command
+      register: join_command_out
+      changed_when: false
+
+    - name: Write join script to /tmp/kube_join.sh (master)
+      copy:
+        dest: /tmp/kube_join.sh
+        content: |
+          #!/bin/bash
+          {{ join_command_out.stdout }}
+        mode: '0755'
+
+- hosts: workers
+  become: yes
+  gather_facts: yes
+  tasks:
+    - name: Fetch join script from master (delegated)
+      fetch:
+        src: /tmp/kube_join.sh
+        dest: /tmp/{{ inventory_hostname }}-kube_join.sh
+        flat: yes
+      delegate_to: "{{ groups['control_plane'][0] }}"
+
+    - name: Copy join script to worker
+      copy:
+        src: /tmp/{{ inventory_hostname }}-kube_join.sh
+        dest: /tmp/kube_join.sh
+        mode: '0755'
+
+    - name: Run kubeadm join (idempotent via creates)
+      command: /tmp/kube_join.sh
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+      register: join_result
+      failed_when: join_result.rc != 0 and 'already' not in (join_result.stderr | lower)
