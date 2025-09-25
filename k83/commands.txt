@@ -1,0 +1,2 @@
+ansible-playbook -i inventory.ini k8s-cluster-reset.yaml --become -K
+ansible-playbook -i inventory.ini k8s-cluster-init.yaml --become -K
